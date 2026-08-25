@@ -50,6 +50,21 @@ def _call(agent: Agent, prompt: str):
             time.sleep(wait)
 
 
+def _cached(system: str, prompt: str, agent_kind: str, model_cls):
+    """Cache keyed on model + system prompt + the full user prompt. For match
+    that prompt embeds the candidate tasks, so the key captures the database
+    state the decision was made against - it cannot return an answer computed
+    for a different candidate set. Editing either prompt invalidates the key."""
+    key = hashlib.sha256(f"{MODEL}|{system}|{prompt}".encode()).hexdigest()
+    store = _cache_load()
+    if key in store:
+        return model_cls(**store[key])
+    result = _call(_agent(agent_kind), prompt)
+    store[key] = result.model_dump()
+    _cache_save(store)
+    return result
+
+
 def _cache_load() -> dict:
     try:
         return json.loads(CACHE.read_text())
@@ -133,9 +148,9 @@ def _agent(kind: str) -> Agent:
 
 
 def extract(text: str, meta: dict) -> Extraction:
-    """Cached on the message body: extraction is a pure function of the text,
-    so re-running the corpus after a reset costs nothing. On a free tier that
-    is the difference between rehearsing the demo once and rehearsing it."""
+    """Extraction is a pure function of the message text, so re-running the
+    corpus after a reset costs nothing. On a free tier that is the difference
+    between rehearsing the demo once and rehearsing it."""
     # The weekday is spelled out because models reliably miscount it.
     # "moved to Friday" was landing on a Saturday without this.
     day = date.fromisoformat(meta["received_at"][:10])
@@ -145,26 +160,21 @@ def extract(text: str, meta: dict) -> Extraction:
     )
     # The system prompt is part of the key: tuning it must invalidate the
     # cache, or prompt changes silently have no effect.
-    key = hashlib.sha256(f"{MODEL}|{EXTRACT_PROMPT}|{prompt}".encode()).hexdigest()
-    store = _cache_load()
-    if key in store:
-        return Extraction(**store[key])
-
-    result = _call(_agent("extract"), prompt)
-    store[key] = result.model_dump()
-    _cache_save(store)
-    return result
+    return _cached(EXTRACT_PROMPT, prompt, "extract", Extraction)
 
 
 def match(ex: Extraction, candidates: list) -> MatchVerdict:
+    # Sorted by id, not by the recency the retrieval used: the wall-clock
+    # updated_at would reorder this listing on every run, changing the prompt
+    # and so the cache key for a logically identical decision.
     listing = "\n".join(
         f"- id={t['id']} | {t['title']} | course={t['course']} | kind={t['kind']}"
         f" | due={t['due_at'] or 'unknown'}"
-        for t in candidates
+        for t in sorted(candidates, key=lambda t: t["id"])
     )
     prompt = (
         f"NEW EXTRACTION\n  title: {ex.title}\n  course: {ex.course}\n  kind: {ex.kind}\n"
         f"  due: {ex.due_at or 'unknown'}\n  correction: {ex.correction_signal}"
         f" (references {ex.references_old_value})\n\nEXISTING OPEN TASKS\n{listing}"
     )
-    return _call(_agent("match"), prompt)
+    return _cached(MATCH_PROMPT, prompt, "match", MatchVerdict)

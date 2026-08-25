@@ -153,9 +153,12 @@ ports to Supabase unchanged.
 corpus is about 110 model calls, which is most of a day's free quota. So
 requests are throttled to `RPM` and retried on 429, and extractions are
 cached on the message body — extraction is a pure function of the text, so
-re-running after a `reset` costs nothing. Rehearsing the demo does not burn
-the quota. Matching is not cached: its answer depends on what is already in
-the database.
+re-running after a `reset` costs nothing. Matching is cached on a key that
+includes the candidate tasks, so it can never return an answer computed
+against a different database state, and the candidate listing is sorted by id
+rather than by `updated_at` - a wall-clock ordering would have changed the
+prompt on every run and made the cache useless. Together these make a full
+re-ingest reproducible and about ten seconds instead of two minutes.
 
 **The model call is injected, so the logic is testable.** `resolve()` takes
 a match function as an argument. The tests pass canned verdicts, which is why
