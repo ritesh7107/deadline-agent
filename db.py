@@ -13,7 +13,10 @@ def now() -> date:
 
 
 def connect(path: str | None = None) -> sqlite3.Connection:
-    conn = sqlite3.connect(path or DB_PATH)
+    # check_same_thread=False because Pydantic AI runs sync tools in a worker
+    # thread, and the query agent's find_tasks reads through this connection.
+    # Safe here: the agent serialises its tool calls and they only read.
+    conn = sqlite3.connect(path or DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     with open(os.path.join(os.path.dirname(__file__), "schema.sql")) as f:

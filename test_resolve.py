@@ -186,6 +186,21 @@ def test_reingest_is_idempotent():
     assert db.add_message(c, "DBMS report due 28th", "x", "student", "2026-08-20") is None
 
 
+def test_query_works_from_a_worker_thread():
+    """Pydantic AI calls sync tools off the main thread. Without
+    check_same_thread=False every `ask` dies before reaching the model."""
+    import threading
+
+    import query
+    c = fresh()
+    feed(c, "DBMS report due 28th", TA_MAIL, task(due_at="2026-08-28"))
+    box = {}
+    t = threading.Thread(target=lambda: box.update(r=query.find(c)))
+    t.start()
+    t.join()
+    assert box.get("r"), "query failed when called off the main thread"
+
+
 def test_authority_ladder():
     assert authority("professor", False) > authority("ta", False) > authority("student", False)
     assert authority("professor", True) == 1, "hearsay must cap regardless of who said it"
