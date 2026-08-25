@@ -4,6 +4,7 @@ existing one, or nothing at all - then gate it on confidence.
 The three outcomes are kept deliberately distinct. Collapsing "correction"
 and "contradiction" into one path is the mistake the brief is about.
 """
+import re
 from dataclasses import dataclass
 
 import db
@@ -125,6 +126,19 @@ def _apply_update(conn, message_id, meta, ex: Extraction, verdict: MatchVerdict)
                      meta["source"], new_auth, why)
         return Outcome("updated", tid, f"{why}: {old_due} -> {ex.due_at}")
 
+    # A2. A weaker source, but it quotes the value it is superseding and quotes
+    #     it correctly - "due 25th, not the 28th". Knowing the old value is
+    #     evidence the sender is actually informed, so the date moves; the weak
+    #     source is why it still gets flagged. This is the brief's own example.
+    if ex.correction_signal and _quotes(ex.references_old_value, old_due):
+        reason = (f"corrected to {ex.due_at} from {old_due} by {meta['source']},"
+                  f" which is less authoritative than {task['due_source']}")
+        db.update_task(conn, tid, due_at=ex.due_at, due_precision=ex.due_precision,
+                       due_source=meta["source"], needs_confirmation=1, confirm_reason=reason)
+        db.add_event(conn, tid, message_id, "due_at", old_due, ex.due_at,
+                     meta["source"], new_auth, "correction quoting the old value, flagged")
+        return Outcome("updated", tid, reason, flagged=True)
+
     # B. Equal authority, no correction language. Take the newer value but
     #    only tentatively, and make the disagreement visible.
     if new_auth == old_auth:
@@ -144,6 +158,16 @@ def _apply_update(conn, message_id, meta, ex: Extraction, verdict: MatchVerdict)
     db.add_event(conn, tid, message_id, "due_at_disputed", old_due, ex.due_at,
                  meta["source"], new_auth, "lower-authority contradiction, not applied")
     return Outcome("updated", tid, reason, flagged=True)
+
+
+def _quotes(referenced: str | None, stored_due: str | None) -> bool:
+    """Does the message's quoted old value match the date we hold?
+    ponytail: day-of-month match only. Good enough while corrections say
+    "the 28th"; compare full dates if messages start quoting month and year."""
+    if not referenced or not stored_due:
+        return False
+    days = re.findall(r"\d{1,2}", referenced)
+    return bool(days) and int(days[0]) == int(stored_due[-2:])
 
 
 def _fill_blanks(conn, tid, task, ex: Extraction):

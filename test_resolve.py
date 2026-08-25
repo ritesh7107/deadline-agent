@@ -120,6 +120,34 @@ def test_lower_authority_cannot_move_the_date():
     assert any(e["field"] == "due_at_disputed" for e in db.events_for(c, a.task_id))
 
 
+def test_weak_source_correction_that_quotes_the_old_date():
+    """The brief's own example: a group chat saying "due 25th not 28th"
+    against a TA's 28th. It must update the task - and flag it, because the
+    correction came from the weaker source."""
+    c = fresh()
+    a = feed(c, "DBMS report due 28th", TA_MAIL, task(due_at="2026-08-28"))
+    b = feed(c, "guys the DBMS report is due 25th not 28th", CLASSMATE,
+             task(due_at="2026-08-25", correction_signal=True, references_old_value="28th"),
+             MatchVerdict(decision="UPDATE", task_id=a.task_id, confidence=.9, reason="same report"))
+    assert c.execute("SELECT count(*) FROM tasks").fetchone()[0] == 1, "correction made a duplicate"
+    t = db.get_task(c, a.task_id)
+    assert t["due_at"] == "2026-08-25", "the correction did not take"
+    assert b.flagged and t["needs_confirmation"] == 1, "weak-source correction must be flagged"
+    ev = [e for e in db.events_for(c, a.task_id) if e["field"] == "due_at"][0]
+    assert ev["old_value"] == "2026-08-28" and ev["new_value"] == "2026-08-25"
+
+
+def test_correction_quoting_the_wrong_old_date_is_not_trusted():
+    c = fresh()
+    a = feed(c, "DBMS report due 28th", PROF_MAIL, task(due_at="2026-08-28"))
+    feed(c, "DBMS report moved to 25th, not the 21st", CLASSMATE,
+         task(due_at="2026-08-25", correction_signal=True, references_old_value="21st"),
+         MatchVerdict(decision="UPDATE", task_id=a.task_id, confidence=.7, reason="same report"))
+    t = db.get_task(c, a.task_id)
+    assert t["due_at"] == "2026-08-28", "corrected a date it never held"
+    assert t["needs_confirmation"] == 1
+
+
 def test_duplicate_creates_nothing():
     c = fresh()
     a = feed(c, "DBMS report due 28th", TA_MAIL, task(due_at="2026-08-28"))
