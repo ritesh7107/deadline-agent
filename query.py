@@ -14,7 +14,7 @@ import db
 
 load_dotenv()
 
-MODEL = os.environ.get("MODEL", "anthropic:claude-haiku-4-5-20251001")
+MODEL = os.environ.get("MODEL", "google:gemini-2.5-flash")
 
 _conn = None
 

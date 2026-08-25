@@ -14,7 +14,7 @@ git clone git@github.com:ritesh7107/deadline-agent.git && cd deadline-agent
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env        # paste your ANTHROPIC_API_KEY
+cp .env.example .env        # paste a free Gemini key, see below
 python cli.py ingest messages.jsonl
 python cli.py tasks
 python cli.py ask "what's due this week?"
@@ -22,6 +22,20 @@ python cli.py ask "what's due this week?"
 
 No database to install. `sqlite3` ships with Python and the database is a
 file (`deadlines.db`).
+
+**The key is free.** Grab one at
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey) — no card,
+no billing account. Any other provider is a one-line change in `.env`:
+
+```bash
+MODEL=google:gemini-2.5-flash              # default, free tier
+MODEL=groq:llama-3.3-70b-versatile         # free tier, GROQ_API_KEY
+MODEL=anthropic:claude-haiku-4-5-20251001  # ANTHROPIC_API_KEY
+MODEL=openai:gpt-4o-mini                   # OPENAI_API_KEY
+```
+
+Nothing in the code is provider-specific — Pydantic AI enforces the same
+typed output whichever model you point it at.
 
 `NOW=2026-08-25` is pinned in `.env.example` so "this week" means the same
 thing on your machine as it did on mine. Unset it to use the real date.
@@ -134,6 +148,14 @@ this say the 25th?* with receipts.
 to create a Supabase project first is twenty minutes from their first output,
 not five. `DB_PATH` points the database anywhere; the schema is plain SQL and
 ports to Supabase unchanged.
+
+**Free tiers shape the ingest loop, not the design.** One pass over the
+corpus is about 110 model calls, which is most of a day's free quota. So
+requests are throttled to `RPM` and retried on 429, and extractions are
+cached on the message body — extraction is a pure function of the text, so
+re-running after a `reset` costs nothing. Rehearsing the demo does not burn
+the quota. Matching is not cached: its answer depends on what is already in
+the database.
 
 **The model call is injected, so the logic is testable.** `resolve()` takes
 a match function as an argument. The tests pass canned verdicts, which is why

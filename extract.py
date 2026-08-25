@@ -2,18 +2,63 @@
 
 Both LLM calls live here so the resolver stays pure and testable.
 """
+import hashlib
+import json
 import os
+import time
 from functools import cache
+from pathlib import Path
 
 from dotenv import load_dotenv
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelHTTPError
 
-import db
 from models import Extraction, MatchVerdict
 
 load_dotenv()
 
-MODEL = os.environ.get("MODEL", "anthropic:claude-haiku-4-5-20251001")
+MODEL = os.environ.get("MODEL", "google:gemini-2.5-flash")
+
+# Free tiers are rate limited per minute and per day, and one pass over the
+# corpus is ~110 calls. Both knobs below exist so a full ingest survives that.
+RPM = int(os.environ.get("RPM", "10"))
+CACHE = Path(os.environ.get("CACHE_DIR", ".cache")) / "extractions.json"
+
+_last_call = 0.0
+
+
+def _throttle():
+    global _last_call
+    gap = 60.0 / RPM - (time.monotonic() - _last_call)
+    if gap > 0:
+        time.sleep(gap)
+    _last_call = time.monotonic()
+
+
+def _call(agent: Agent, prompt: str):
+    """Throttled, with a bounded retry - free tiers return 429 readily."""
+    for attempt in range(4):
+        _throttle()
+        try:
+            return agent.run_sync(prompt).output
+        except ModelHTTPError as e:
+            if e.status_code not in (429, 503) or attempt == 3:
+                raise
+            wait = 12 * (attempt + 1)
+            print(f"    rate limited, waiting {wait}s")
+            time.sleep(wait)
+
+
+def _cache_load() -> dict:
+    try:
+        return json.loads(CACHE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _cache_save(store: dict):
+    CACHE.parent.mkdir(exist_ok=True)
+    CACHE.write_text(json.dumps(store))
 
 EXTRACT_PROMPT = """\
 You read one message forwarded by a student - a class announcement, a group
@@ -68,11 +113,22 @@ def _agent(kind: str) -> Agent:
 
 
 def extract(text: str, meta: dict) -> Extraction:
+    """Cached on the message body: extraction is a pure function of the text,
+    so re-running the corpus after a reset costs nothing. On a free tier that
+    is the difference between rehearsing the demo once and rehearsing it."""
     prompt = (
         f"Message date: {meta['received_at']}\n"
         f"Channel: {meta['source']}\nSender: {meta['sender_role']}\n\n{text}"
     )
-    return _agent("extract").run_sync(prompt).output
+    key = hashlib.sha256(f"{MODEL}|{prompt}".encode()).hexdigest()
+    store = _cache_load()
+    if key in store:
+        return Extraction(**store[key])
+
+    result = _call(_agent("extract"), prompt)
+    store[key] = result.model_dump()
+    _cache_save(store)
+    return result
 
 
 def match(ex: Extraction, candidates: list) -> MatchVerdict:
@@ -86,4 +142,4 @@ def match(ex: Extraction, candidates: list) -> MatchVerdict:
         f"  due: {ex.due_at or 'unknown'}\n  correction: {ex.correction_signal}"
         f" (references {ex.references_old_value})\n\nEXISTING OPEN TASKS\n{listing}"
     )
-    return _agent("match").run_sync(prompt).output
+    return _call(_agent("match"), prompt)
