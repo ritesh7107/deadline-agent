@@ -196,3 +196,14 @@ test_resolve.py   offline branch tests
   brief needs them.
 - `status` is only ever `open`. Completion would be the next column to use,
   not a new table.
+- The extractor is deliberately conservative about bare ordinals. *"I heard
+  the DAA quiz got shifted to the 3rd"* yields no date rather than guessing
+  September 3rd, so the message registers as detail without moving the
+  deadline. That is the "never infer a date" rule firing slightly wider than
+  necessary — the right side to err on, given the alternative is a wrong date
+  in a student's calendar.
+- *"closes this Sunday"*, sent on a Sunday, still resolves to that same day
+  despite the prompt ruling it out. The system outcome is right — the
+  official date holds and the disagreement is flagged — but the underlying
+  extraction is wrong. A deterministic post-pass over weekday phrases would
+  fix it more reliably than more prompt text.

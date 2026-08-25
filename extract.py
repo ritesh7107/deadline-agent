@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import time
+from datetime import date
 from functools import cache
 from pathlib import Path
 
@@ -65,10 +66,13 @@ You read one message forwarded by a student - a class announcement, a group
 chat message, an email, or a syllabus snippet - and pull out the deliverable
 it describes, if any.
 
-is_task is FALSE for anything with no deliverable: social plans, logistics,
-questions, complaints, greetings. Many of these mention a time ("football at
-6?", "class at 9 tmrw?"). A time is not a deadline. Judge the intent, not the
-presence of a date.
+is_task is FALSE for anything the student does not have to hand in or sign up
+for: social plans, questions, complaints, greetings, and logistics. Many of
+these mention a time ("football at 6?", "class at 9 tmrw?", "cricket on
+Sunday 4pm") - a time is not a deadline. Room changes, cancelled or shifted
+classes, timetable and bus-timing changes are logistics, not deliverables
+("lab 3, they shifted it" is not a task). Judge the intent, not the presence
+of a date.
 
 due_at is the hard rule of this system: an ISO date only when the message
 actually states or clearly implies one relative to the message date. If the
@@ -86,21 +90,37 @@ stated - "moved to", "rescheduled", "postponed", "now due", "not the 28th",
 is_hearsay is true when the sender is relaying someone else - "I heard",
 "someone said", "apparently", "they're saying".
 
-Resolve relative dates against the message date given in the input."""
+Resolve relative dates against the message date in the input, whose weekday
+is given. A weekday, with or without "this" or "next", means the next occurrence of it
+strictly after the message date - never the message date itself, even when
+the message was sent on that weekday. Count the days out one by one before answering - a deadline on
+the wrong day is the worst failure this system has."""
 
 MATCH_PROMPT = """\
 You decide whether a newly extracted task refers to one the student already
 has, so that corrections update the existing task instead of duplicating it.
 
+Start from the assumption that a message about a course you already have a
+task for is about THAT task. Students rarely announce two quizzes in one
+course in the same week; they talk about the same one repeatedly.
+
 UPDATE - the same real-world deliverable, described again with new or changed
-detail. Different wording for the same thing still counts: "the DBMS report",
-"DBMS Assignment 2" and "that database submission" are one task.
+detail. Different wording still counts: "the DBMS report", "DBMS Assignment
+2" and "that database submission" are one task. So do vague mentions and
+second-hand rumours - "don't forget the DBMS quiz", "I heard the DAA quiz
+moved" refer to the quiz already on the list, not to new ones. A message
+carrying no date at all is almost never a new task.
 
-DUPLICATE - the same deliverable with nothing new. Reminders and forwards.
+DUPLICATE - the same deliverable with nothing new to record. Reminders that
+restate a date you already hold.
 
-NEW - a genuinely different deliverable. Two quizzes in the same course are
-different tasks. When unsure between NEW and UPDATE, choose NEW: a spurious
-duplicate is a smaller harm than silently overwriting an unrelated deadline.
+NEW - a genuinely distinct deliverable. Matching course and kind is strong
+evidence of sameness, so choose NEW only when something actually
+distinguishes them: a different number ("Assignment 2" vs "Assignment 3"), a
+different unit or topic, or a date far outside the existing one's window.
+
+Silently duplicating a task is the failure this step exists to prevent. When
+course and kind both match and nothing distinguishes them, choose UPDATE.
 
 Return task_id for UPDATE and DUPLICATE."""
 
@@ -116,11 +136,16 @@ def extract(text: str, meta: dict) -> Extraction:
     """Cached on the message body: extraction is a pure function of the text,
     so re-running the corpus after a reset costs nothing. On a free tier that
     is the difference between rehearsing the demo once and rehearsing it."""
+    # The weekday is spelled out because models reliably miscount it.
+    # "moved to Friday" was landing on a Saturday without this.
+    day = date.fromisoformat(meta["received_at"][:10])
     prompt = (
-        f"Message date: {meta['received_at']}\n"
+        f"Message date: {day.isoformat()} ({day.strftime('%A')})\n"
         f"Channel: {meta['source']}\nSender: {meta['sender_role']}\n\n{text}"
     )
-    key = hashlib.sha256(f"{MODEL}|{prompt}".encode()).hexdigest()
+    # The system prompt is part of the key: tuning it must invalidate the
+    # cache, or prompt changes silently have no effect.
+    key = hashlib.sha256(f"{MODEL}|{EXTRACT_PROMPT}|{prompt}".encode()).hexdigest()
     store = _cache_load()
     if key in store:
         return Extraction(**store[key])
